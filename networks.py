@@ -86,9 +86,7 @@ class CLS(nn.Module):
             self.bottleneck = nn.Linear(in_dim, bottle_neck_dim)
             self.weight1 = torch.nn.Parameter(torch.FloatTensor(1), requires_grad = True)
             self.fc = nn.Linear(bottle_neck_dim, out_dim, bias = False)
-            # if fc_init is not None:
-            #     nn.init.constant_(self.fc.weight, fc_init)
-            #self.fc = VirtualLinear(bottle_neck_dim, out_dim)
+            
             self.main = nn.Sequential(
                 self.bottleneck,
                 nn.Sequential(
@@ -122,108 +120,16 @@ class CLS(nn.Module):
         out[-1] = nn.Softmax(dim=-1)(out[-2])
         return out
     
-
-    def virt_unk_forward(self, feature_otherep, logits, target):
-        if self.training:
-            
-            target = target.unsqueeze(1)
-            W_yi = torch.gather(self.fc.weight, 0, target.expand(
-                target.size(0), self.fc.weight.size(1)))
-            # W_virt = W_yi
-            W_virt = torch.norm(W_yi,dim=1).unsqueeze(-1) * feature_otherep / torch.norm(feature_otherep, dim =1).unsqueeze(-1)
-            
-            virt = torch.bmm(W_virt.unsqueeze(1), feature_otherep.unsqueeze(-1)).squeeze(-1)
-            
-            x = torch.cat([logits, virt], dim=1)
-            x = x / self.temp
-            x = nn.Softmax(-1)(x)
-           
-        return x
-
     def virt_forward(self, K, feature_source, logits: torch.Tensor, target: Union[torch.Tensor, None] = None,  ) -> torch.Tensor:
-        
-        
         if self.training:
-            # from IPython import embed;embed()
             with torch.no_grad():
-                W_yi = torch.gather(self.fc.weight, 0, target.unsqueeze(1).expand(target.size(0), self.fc.weight.size(1)))
-                    # W_yi = self.fc.weight[target]
-                    
+                W_yi = torch.gather(self.fc.weight, 0, target.unsqueeze(1).expand(target.size(0), self.fc.weight.size(1)))   
                 W_virt = torch.norm(W_yi,dim=1).unsqueeze(-1).unsqueeze(-1) * ((K / torch.norm(K, dim =1).unsqueeze(-1)).unsqueeze(0))
-                    
-
             vir = torch.bmm(W_virt, feature_source.unsqueeze(-1)).squeeze(-1)
-            # vir = torch.matmul(feature_source, K.t())
             logits = torch.cat([logits, vir], dim=-1)
-            # logits = torch.flatten(logits, start_dim=0, end_dim=1)
             x = nn.Softmax(-1)(logits)
-            
-
-
-        return x
-    def virt_forward3(self, unk_ctds, feature_source, logits: torch.Tensor, target: Union[torch.Tensor, None] = None,  ) -> torch.Tensor:
-        
-        
-        if self.training:
-          
-   
-            # from IPython import embed;embed()
-            with torch.no_grad():
-                W_yi = torch.gather(self.fc.weight, 0, target.unsqueeze(1).expand(target.size(0), self.fc.weight.size(1)))
-                # W_yi = self.fc.weight[target]
-                
-                W_virt = torch.norm(W_yi,dim=1).unsqueeze(-1) * unk_ctds[target] / torch.norm(unk_ctds[target], dim =1).unsqueeze(-1)
-                
-            virt = torch.bmm(W_virt.unsqueeze(1), feature_source.unsqueeze(-1)).squeeze(-1)
-    
-            
-            x = torch.cat([logits, virt], dim=1)
-            x = x / self.temp
-            x = nn.Softmax(-1)(x)
         return x
     
-    def virt_forward2(self, K, feature_source, logits: torch.Tensor, target: Union[torch.Tensor, None] = None,  ) -> torch.Tensor:
-        
-        
-        if self.training:
-            from IPython import embed;embed()
-            vir = torch.matmul(feature_source, self.fc.weight[logits.size(1):].t()).unsqueeze(-1)
-            logits = logits.unsqueeze(1).expand(logits.size(0), K,logits.size(1))
-            logits = torch.cat([logits, vir], dim=-1)
-            logits = torch.flatten(logits, start_dim=0, end_dim=1)
-            x = nn.Softmax(-1)(logits)
-            
-
-
-        return x
-    def virt_forward1(self, unk_ctds,feature_source, logits: torch.Tensor, target: Union[torch.Tensor, None] = None,  ) -> torch.Tensor:
-        
-        
-        if self.training:
-          
-            with torch.no_grad():
-                relation = self.fc.weight @self.fc.weight.t()
-                l = logits.size(1)
-                relation = relation[l:,:l]
-                _, index = relation.max(dim=0)
-                index = index + l
-                
-            target = index[target]
-            target = target.unsqueeze(1)
-            W_yi = torch.gather(self.fc.weight, 0, target.expand(
-                target.size(0), self.fc.weight.size(1)))
-            
-            # W_virt = torch.norm(W_yi,dim=1).unsqueeze(-1) * feature_source / torch.norm(feature_source, dim =1).unsqueeze(-1)
-            
-            virt = torch.bmm(W_yi.unsqueeze(1), feature_source.unsqueeze(-1)).squeeze(-1)
-            
-            x = torch.cat([logits, virt], dim=1)
-            x = x / self.temp
-            x = nn.Softmax(-1)(x)
-        return x
-
-
-
 
 class AdversarialNetwork(nn.Module):
     def __init__(self):
@@ -279,27 +185,3 @@ class GradientReverseModule(nn.Module):
         self.coeff = self.scheduler(self.global_step)
         self.global_step += 1.0
         return self.grl(self.coeff, x)
-
-
-class VirtualLinear(nn.Linear):
-    def __init__(self, in_features: int, out_features: int):
-        super(VirtualLinear, self).__init__(
-            in_features=in_features, out_features=out_features, bias=False)
-
-    def forward(self, x: torch.Tensor, target: Union[torch.Tensor, None] = None) -> torch.Tensor:
-        weight = self.weight
-
-        output = F.linear(x, weight)
-
-        if self.training:
-            target = target.unsqueeze(1)
-            W_yi = torch.gather(self.weight, 0, target.expand(
-                target.size(0), self.weight.size(1)))
-            
-            W_virt = torch.norm(W_yi) * x / torch.norm(x)
-            
-            virt = torch.bmm(W_virt.unsqueeze(1), x.unsqueeze(-1)).squeeze(-1)
-
-            output = torch.cat([output, virt], dim=1)
-
-        return output
