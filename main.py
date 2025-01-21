@@ -328,7 +328,7 @@ while epoch <70:
                     loss = 1*(ce + 1* virtual_ce + 0* 0.3 * adv_loss + 0 * entropy +0* ce_ep1)
         
                 else:
-                    loss = ce + 0* virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep1 #+ a*t_cr_loss
+                    loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep1 #+ a*t_cr_loss
                 loss.backward()
             losscounter.addOntBatch( ce, entropy, virtual_ce, ce_ep1, adv_loss)
             k += 1
@@ -340,25 +340,25 @@ while epoch <70:
    
     all_centroids.update(ProbRecorder['pred_s'],ProbRecorder['pred_t'],ProbRecorder['label_s'])
     if epoch>=0:
-        if  epoch<=warmiter:
-            fcweight = []
-            for i in range(args.shared_classes):
-                fcweight.append(ProbRecorder['fss'][np.nonzero(ProbRecorder['label_s'])[1]==i].mean(axis=0))
-            fcweight = np.stack(fcweight,axis=0)
+        
+         fcweight = []
+         for i in range(args.shared_classes):
+             fcweight.append(ProbRecorder['fss'][np.nonzero(ProbRecorder['label_s'])[1]==i].mean(axis=0))
+         fcweight = np.stack(fcweight,axis=0)
 
-            faiss_kmeans = faiss.Kmeans(256, int(K_cluster), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
-            faiss_kmeans.train(ProbRecorder['ftt'])
-            
-            
-            t_centroids = faiss_kmeans.centroids
-            cost = np.linalg.norm(fcweight[:,None,:] -  t_centroids[None,:,:],axis=-1)
-            _,t_match = linear_sum_assignment(cost)
-            nomatch = []
-            for i in range(args.all_classes):
-                if i not in t_match:
-                    nomatch.append(t_centroids[i])
-            nomatch = np.stack(nomatch,axis=0)
-            nomatch = torch.from_numpy(nomatch).cuda().detach().clone()
+         faiss_kmeans = faiss.Kmeans(256, int(K_cluster), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
+         faiss_kmeans.train(ProbRecorder['ftt'])
+         
+         
+         t_centroids = faiss_kmeans.centroids
+         cost = np.linalg.norm(fcweight[:,None,:] -  t_centroids[None,:,:],axis=-1)
+         _,t_match = linear_sum_assignment(cost)
+         nomatch = []
+         for i in range(args.all_classes):
+             if i not in t_match:
+                 nomatch.append(t_centroids[i])
+         nomatch = np.stack(nomatch,axis=0)
+         nomatch = torch.from_numpy(nomatch).cuda().detach().clone()
 
         if epoch ==warmiter:
 
