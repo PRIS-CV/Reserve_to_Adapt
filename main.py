@@ -325,12 +325,11 @@ while epoch <70:
             with OptimizerManager([optimizer_cls, optimizer_feature_extractor,optimizer_discriminator]):
 
                 if epoch<=warmiter:
-                    loss = 1*(ce + 1* virtual_ce + 0* 0.3 * adv_loss + 0 * entropy +0* ce_ep1)
-        
+                    loss = 1 * ce + 1* virtual_ce         
                 else:
-                    loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep1 #+ a*t_cr_loss
+                    loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep1 
                 loss.backward()
-            losscounter.addOntBatch( ce, entropy, virtual_ce, ce_ep1, adv_loss)
+            losscounter.addOntBatch(ce, entropy, virtual_ce, ce_ep1, adv_loss)
             k += 1
            
             torch.cuda.empty_cache()  
