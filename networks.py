@@ -122,22 +122,6 @@ class CLS(nn.Module):
         out[-1] = nn.Softmax(dim=-1)(out[-2])
         return out
     
-    # def virt_forward(self,feature_source, logits: torch.Tensor, target: Union[torch.Tensor, None] = None) -> torch.Tensor:
-        
-        
-    #     if self.training:
-    #         from IPython import embed;embed()
-    #         target = target.unsqueeze(1)
-    #         W_yi = torch.gather(self.fc.weight, 0, target.expand(
-    #             target.size(0), self.fc.weight.size(1)))
-            
-    #         W_virt = torch.norm(W_yi,dim=1).unsqueeze(-1) * feature_source / torch.norm(feature_source, dim =1).unsqueeze(-1)
-            
-    #         virt = torch.bmm(W_virt.unsqueeze(1), feature_source.unsqueeze(-1)).squeeze(-1)
-            
-    #         x = torch.cat([logits, virt], dim=1)
-    #         x = nn.Softmax(-1)(x)
-    #     return x
 
     def virt_unk_forward(self, feature_otherep, logits, target):
         if self.training:
@@ -241,106 +225,6 @@ class CLS(nn.Module):
 
 
 
-class CLS0(nn.Module):
-    def __init__(self, in_dim, out_dim, bottle_neck_dim=256,vis_dim=3):
-        super(CLS0, self).__init__()
-        if bottle_neck_dim:
-            self.bottleneck = nn.Linear(in_dim, bottle_neck_dim)
-            self.vfc= nn.Linear(bottle_neck_dim,vis_dim)
-            self.fc = nn.Linear(vis_dim, out_dim)
-            #self.fc = VirtualLinear(bottle_neck_dim, out_dim)
-            self.main = nn.Sequential(
-                self.bottleneck,
-                nn.Sequential(
-                    nn.BatchNorm1d(bottle_neck_dim),
-                    nn.LeakyReLU(0.2, inplace=True),
-                    self.vfc,
-                    nn.BatchNorm1d(vis_dim),
-                    # nn.LeakyReLU(0.2, inplace=True),  
-                ),
-                self.fc,
-                nn.Softmax(dim=-1)
-            )
-        else:
-            self.fc = nn.Linear(in_dim, out_dim)
-            self.main = nn.Sequential(
-                self.fc,
-                nn.Softmax(dim=-1)
-            )
-
-    def forward(self, x):
-        out = [x]
-        for module in self.main.children():
-            x = module(x)
-            out.append(x)
-        
-        return out
-    
-    def virt_forward(self, x: torch.Tensor, target: Union[torch.Tensor, None] = None) -> torch.Tensor:
-        
-        
-        if self.training:
-            target = target.unsqueeze(1)
-            W_yi = torch.gather(self.fc.weight, 0, target.expand(
-                target.size(0), self.fc.weight.size(1)))
-            
-            W_virt = torch.norm(W_yi) * x / torch.norm(x)
-            
-            virt = torch.bmm(W_virt.unsqueeze(1), x.unsqueeze(-1)).squeeze(-1)
-            
-            x = torch.cat([x, virt], dim=1)
-            x = nn.Softmax(-1)(x)
-        return x
-
-class CLS1(nn.Module):
-    def __init__(self, in_dim, out_dim, bottle_neck_dim=256,orthogonal=False):
-        super(CLS1, self).__init__()
-        if bottle_neck_dim:
-            self.bottleneck = nn.Linear(in_dim, bottle_neck_dim)
-            self.fc = nn.Linear(bottle_neck_dim, out_dim)
-            #self.fc = VirtualLinear(bottle_neck_dim, out_dim)
-            self.main = nn.Sequential(
-                self.bottleneck,
-                nn.Sequential(
-                    nn.BatchNorm1d(bottle_neck_dim),
-                    nn.LeakyReLU(0.2, inplace=True),
-                    self.fc
-                ),
-                nn.Softmax(dim=-1)
-            )
-        else:
-            self.fc = nn.Linear(in_dim, out_dim)
-            self.main = nn.Sequential(
-                self.fc,
-                nn.Softmax(dim=-1)
-            )
-        if orthogonal:
-            nn.init.orthogonal_(self.fc.weight)
-
-    def forward(self, x):
-        out = [x]
-        for module in self.main.children():
-            x = module(x)
-            out.append(x)
-        
-        return out
-    
-    def virt_forward(self, x: torch.Tensor, target: Union[torch.Tensor, None] = None) -> torch.Tensor:
-        
-        
-        if self.training:
-            target = target.unsqueeze(1)
-            W_yi = torch.gather(self.fc.weight, 0, target.expand(
-                target.size(0), self.fc.weight.size(1)))
-            
-            W_virt = torch.norm(W_yi) * x / torch.norm(x)
-            
-            virt = torch.bmm(W_virt.unsqueeze(1), x.unsqueeze(-1)).squeeze(-1)
-
-            x = torch.cat([x, virt], dim=1)
-            x = nn.Softmax(-1)(x)
-        return x
-
 class AdversarialNetwork(nn.Module):
     def __init__(self):
         super(AdversarialNetwork, self).__init__()
@@ -372,54 +256,7 @@ class LargeAdversarialNetwork(AdversarialNetwork):
             self.sigmoid
         )
 
-# class Discriminator(nn.Module):
-#     def __init__(self, n=10):
-#         super(Discriminator, self).__init__()
-#         self.n = n
-#         def f():
-#             return nn.Sequential(
-#                 nn.Linear(2048, 256),
-#                 nn.BatchNorm1d(256),
-#                 nn.LeakyReLU(0.2, inplace=True),
-#                 nn.Linear(256, 1),
-#                 nn.Sigmoid()
-#             )
 
-#         for i in range(n):
-#             self.__setattr__('discriminator_%04d'%i, f())
-    
-#     def forward(self, x):
-#         outs = [self.__getattr__('discriminator_%04d'%i)(x) for i in range(self.n)]
-#         return torch.cat(outs, dim=-1)
-
-class CLS_0(nn.Module):
-    def __init__(self, in_dim, out_dim, bottle_neck_dim=256):
-        super(CLS_0, self).__init__()
-        if bottle_neck_dim:
-            self.bottleneck = nn.Linear(in_dim, bottle_neck_dim)
-            self.fc = nn.Linear(bottle_neck_dim, out_dim)
-            self.main = nn.Sequential(
-                self.bottleneck,
-                nn.Sequential(
-                    nn.LeakyReLU(0.2, inplace=True),
-                    self.fc
-                ),
-                nn.Softmax(dim=-1)
-            )
-        else:
-            self.fc = nn.Linear(in_dim, out_dim)
-            self.main = nn.Sequential(
-                self.fc,
-                nn.Softmax(dim=-1)
-            )
-
-    def forward(self, x):
-        out = [x]
-        for module in self.main.children():
-            x = module(x)
-            out.append(x)
-        return out
-    
 class GradientReverseLayer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, coeff, input):
