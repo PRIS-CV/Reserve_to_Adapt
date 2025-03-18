@@ -20,8 +20,8 @@ def get_args():
     parser = argparse.ArgumentParser(description="Script to launch training",formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     #domains
-    parser.add_argument("--source", help="Source" ,default='/home/tongyujun/class_relation_osda/data/amazon_0-9_train_all.txt')
-    parser.add_argument("--target", help="Target", default='/home/tongyujun/class_relation_osda/data/webcam_0-9_20-30_test.txt')
+    parser.add_argument("--source", help="Source" ,default='/home/tongyujun/Reserve_to_Adapt-main/data/amazon_0-9_train_all.txt')
+    parser.add_argument("--target", help="Target", default='/home/tongyujun/Reserve_to_Adapt-main/data/webcam_0-9_20-30_test.txt')
     
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")   
@@ -47,11 +47,11 @@ args = get_args()
 
 orig_stdout = sys.stdout
 max_iter = 10000
-warmiter = 3
+warmiter = 2
 
 
 
-args.folder_log = '/home/tongyujun/class_relation_osda/log/'+ args.folder_log +'/' + args.source.split('/')[-1][0]+'2'+args.target.split('/')[-1][0]+'_'+args.name
+args.folder_log = '/home/tongyujun/Reserve_to_Adapt-main/log/'+ args.folder_log +'/' + args.source.split('/')[-1][0]+'2'+args.target.split('/')[-1][0]+'_'+args.name
 
 
 
@@ -65,7 +65,7 @@ print('THE OUTPUT IS SAVED IN A TXT FILE HERE ----------------------------------
 print('\n')
 
 f = open(args.folder_log + '/out.txt', 'w')
-# sys.stdout = f
+sys.stdout = f
 
 
 def transform(data, label, is_train):
@@ -242,7 +242,8 @@ while epoch <70:
             unk = (gmm_index!= known_cluster)
             
             
-
+            # label_unk:  target class that unk sample misclassified into
+            # feature_unk:  misclassified unk sample feature
             label_unk = pseudo_t_label[predict_t*unk]
             feature_unk = feature_target[predict_t*unk]
 
@@ -286,16 +287,11 @@ while epoch <70:
                 pseudo_label = torch.zeros(r.size()[0],args.all_classes).cuda().scatter_(1,pseudo_index.unsqueeze(1),torch.ones(r.size()[0],1).cuda())
                 
                 
-                ce_ep1 = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])
-                
-             
-
-                
-
+                ce_ep = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])
             
             else:
                
-                ce_ep1=torch.tensor(0.0)
+                ce_ep=torch.tensor(0.0)
 
  
             
@@ -307,10 +303,10 @@ while epoch <70:
             p = torch.zeros([label_source.shape[0],nomatch.size(0)]).cuda()
             v_label_source = torch.cat((label_source[:,:],p),1)
 
+
             vir_weight = c_weight[torch.nonzero(label_source)[:,1]].cuda()
             vir_weight = torch.where(vir_weight>0,torch.tensor([1]).float().cuda(),torch.tensor([0]).float().cuda()).detach()
             virtual_ce = CrossEntropyLoss(v_label_source, virtual_predict_prob_source, instance_level_weight= vir_weight.contiguous())
-            virtual_ce = CrossEntropyLoss(v_label_source, virtual_predict_prob_source)
     
             entropy = EntropyLoss(predict_prob_target [:,:], instance_level_weight= weight.contiguous())
             adv_loss = BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_source), predict_prob=domain_prob_discriminator_1_source )
@@ -325,11 +321,11 @@ while epoch <70:
             with OptimizerManager([optimizer_cls, optimizer_feature_extractor,optimizer_discriminator]):
 
                 if epoch<=warmiter:
-                    loss = 1 * ce + 1* virtual_ce         
+                    loss = 1 * ce + 1* virtual_ce + 0 * adv_loss + 0 * entropy + 0 * ce_ep         
                 else:
-                    loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep1 
+                    loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep 
                 loss.backward()
-            losscounter.addOntBatch(ce, entropy, virtual_ce, ce_ep1, adv_loss)
+            losscounter.addOntBatch(ce, entropy, virtual_ce, ce_ep, adv_loss)
             k += 1
            
             torch.cuda.empty_cache()  
@@ -338,72 +334,68 @@ while epoch <70:
    
    
     all_centroids.update(ProbRecorder['pred_s'],ProbRecorder['pred_t'],ProbRecorder['label_s'])
-    if epoch>=0:
+
+    
+    # After train
+    s_centroids = []
+    for i in range(args.shared_classes):
+        s_centroids.append(ProbRecorder['fss'][np.nonzero(ProbRecorder['label_s'])[1]==i].mean(axis=0))
+    s_centroids = np.stack(s_centroids,axis=0)
+
+    faiss_kmeans = faiss.Kmeans(256, int(K_cluster), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
+    faiss_kmeans.train(ProbRecorder['ftt'])      
+    t_centroids = faiss_kmeans.centroids
+
+    #find nomatched target cluster
+    cost = np.linalg.norm(s_centroids[:,None,:] -  t_centroids[None,:,:],axis=-1)
+    _,t_match = linear_sum_assignment(cost)
+    nomatch = []
+    for i in range(args.all_classes):
+        if i not in t_match:
+            nomatch.append(t_centroids[i])
+    nomatch = np.stack(nomatch,axis=0)
+    nomatch = torch.from_numpy(nomatch).cuda().detach().clone()
+
+    
+    if epoch ==warmiter:
+        #cluster shared class+K 
+        faiss_kmeans = faiss.Kmeans(256, int(args.all_classes), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
+        faiss_kmeans.train(ProbRecorder['ftt'])
+
+        t_centroids = faiss_kmeans.centroids
+        cost = np.linalg.norm(s_centroids[:,None,:] -  t_centroids[None,:,:],axis=-1)
+        _,t_match = linear_sum_assignment(cost)
+        #no match as unk weight
+        init_unk_weight = []
+        for i in range(args.all_classes):
+            if i not in t_match:
+                init_unk_weight.append(t_centroids[i])
+        init_unk_weight = np.stack(init_unk_weight,axis=0)
         
-         fcweight = []
-         for i in range(args.shared_classes):
-             fcweight.append(ProbRecorder['fss'][np.nonzero(ProbRecorder['label_s'])[1]==i].mean(axis=0))
-         fcweight = np.stack(fcweight,axis=0)
+        for key, v in net.state_dict().items():   
 
-         faiss_kmeans = faiss.Kmeans(256, int(K_cluster), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
-         faiss_kmeans.train(ProbRecorder['ftt'])
-         
-         
-         t_centroids = faiss_kmeans.centroids
-         cost = np.linalg.norm(fcweight[:,None,:] -  t_centroids[None,:,:],axis=-1)
-         _,t_match = linear_sum_assignment(cost)
-         nomatch = []
-         for i in range(args.all_classes):
-             if i not in t_match:
-                 nomatch.append(t_centroids[i])
-         nomatch = np.stack(nomatch,axis=0)
-         nomatch = torch.from_numpy(nomatch).cuda().detach().clone()
-
-        if epoch ==warmiter:
-
-            faiss_kmeans = faiss.Kmeans(256, int(1*args.all_classes), niter=800, verbose=False, min_points_per_centroid=1, gpu=False)
-            faiss_kmeans.train(ProbRecorder['ftt'])
-            # a = ProbRecorder['lt']
-            # D, I = faiss_kmeans.index.search(ProbRecorder['ft'],k=args.all_classes)
-            # cluster_assign = I[:,0]
-            t_centroids = faiss_kmeans.centroids
-            cost = np.linalg.norm(fcweight[:,None,:] -  t_centroids[None,:,:],axis=-1)
-            _,t_match = linear_sum_assignment(cost)
-            nomatch1 = []
-            for i in range(args.all_classes):
-                if i not in t_match:
-                    nomatch1.append(t_centroids[i])
-            nomatch1 = np.stack(nomatch1,axis=0)
-            
-            for key, v in net.state_dict().items():   
-
-                if key=='1.main.1.2.weight':
-                    # print(v.norm(dim=1))
-                    v.requires_grad = False
-                    net.state_dict()['1.fc.weight'].requires_grad = False
-                    
-                    vvnorm = (torch.norm(v, dim = -1)).mean().cpu().numpy()
-                    nomatch1 = nomatch1/np.linalg.norm(nomatch1,axis=-1,keepdims=True)*vvnorm
-                    # v = np.linalg.norm(nomatch1,axis=-1).mean()*v[:args.shared_classes].clone().detach().cpu().numpy()/vvnorm
-                    fcweight = np.concatenate([v[:args.shared_classes].clone().detach().cpu().numpy(), nomatch1,],axis=0)
-                    param = torch.from_numpy(fcweight).cuda().detach().clone()
-                    net.state_dict()['1.fc.weight'].copy_(param)  
-                    
-                    v.requires_grad = True
-                    net.state_dict()['1.fc.weight'].requires_grad = True
-        
-        
-        c_weight = all_centroids.update_virtual(ProbRecorder['feature_unk'], ProbRecorder['label_unk'])
-        # gmm = GaussianMixture(n_components=5, covariance_type='full').fit(ProbRecorder['kl'][:,None])
-        # gum, pi, c = gauss_unif(ProbRecorder['kl'][:,None])
-        # weight = gauss_unif_predict(ProbRecorder['kl'][:,None],gum, pi, c)
-        if epoch<=30:
-             gmm = BayesianGaussianMixture(n_components=4, max_iter=800).fit(ProbRecorder['kl'][:,None])
-        else:
-             gmm = BayesianGaussianMixture(n_components=2, max_iter=800).fit(ProbRecorder['kl'][:,None])
+            if key=='1.main.1.2.weight':
+                v.requires_grad = False
+                net.state_dict()['1.fc.weight'].requires_grad = False
+                
+                vvnorm = (torch.norm(v, dim = -1)).mean().cpu().numpy()
+                init_unk_weight = init_unk_weight/np.linalg.norm(init_unk_weight,axis=-1,keepdims=True)*vvnorm
+                fcweight = np.concatenate([v[:args.shared_classes].clone().detach().cpu().numpy(), init_unk_weight,],axis=0)
+                param = torch.from_numpy(fcweight).cuda().detach().clone()
+                net.state_dict()['1.fc.weight'].copy_(param)  
+                
+                v.requires_grad = True
+                net.state_dict()['1.fc.weight'].requires_grad = True
+    
+    
+    c_weight = all_centroids.update_virtual(ProbRecorder['feature_unk'], ProbRecorder['label_unk'])
+    if epoch<=30:
+        gmm = BayesianGaussianMixture(n_components=4, max_iter=800).fit(ProbRecorder['kl'][:,None])
+    else:
+        gmm = BayesianGaussianMixture(n_components=2, max_iter=800).fit(ProbRecorder['kl'][:,None])
     torch.cuda.empty_cache()
 
-
+   
 
     # =================================evaluation
     with TrainingModeManager([feature_extractor, cls], train=False) as mgr, Accumulator(['predict_prob','predict_index', 'label']) as accumulator:
@@ -428,7 +420,6 @@ while epoch <70:
     cm = m
     cm = cm.astype(float) / np.sum(cm, axis=1, keepdims=True)
     acc_os_star = sum([cm[i][i] for i in range(args.shared_classes)]) / args.shared_classes
-    # from IPython import embed;embed()
     unkn = sum(sum([cm[i][args.shared_classes:] for i in range(10, 21)])) / 11  
     acc_os = (acc_os_star * args.shared_classes + unkn) / 11
            
@@ -455,7 +446,7 @@ while epoch <70:
 
 
 print ('Best: Epoch:{}\tOS: {:.3f}\tOS*:{:.3f}\tUnk:{:.3f}\tHos:{:.3f}'.format(best_epoch, best_os,best_os_star,best_unk,best_hos))
-print('class_num'+ str(args.all_classes) + 'k' + str(topk) +'a'+ str(a) + str(args))
+print('class_num'+ str(args.all_classes)   + str(args))
 sys.stdout = orig_stdout
 f.close()
 
