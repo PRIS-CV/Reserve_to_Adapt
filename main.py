@@ -1,4 +1,3 @@
-
 import os
 import sys
 import argparse
@@ -32,6 +31,7 @@ def get_args():
    
     #path of the folders used
     parser.add_argument("--folder_log", default="of31", help="Path of the log folder")
+    parser.add_argument("--data_log", default="/home/tongyujun/Office/", help="Path of the dataset")
 
     #to select gpu/num of workers
     parser.add_argument("--gpu", type=int, default=0, help="gpu chosen for the training")
@@ -47,7 +47,7 @@ args = get_args()
 
 orig_stdout = sys.stdout
 max_iter = 10000
-warmiter = 2
+warmiter = 3
 
 
 
@@ -80,7 +80,7 @@ def transform(data, label, is_train):
     ])
     data = transform_train(data)
     return data, label
-images,labels = get_split_dataset_info(args.source,'/home/tongyujun/Office/')
+images,labels = get_split_dataset_info(args.source, args.data_log)
 ds = CustomDataset(images,labels,img_transformer=transform,is_train=True)
 source_train = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
@@ -99,7 +99,7 @@ def transform(data, label, is_train):
     ])
     data = transform_train(data)
     return data, label
-images,labels = get_split_dataset_info(args.target,'/home/tongyujun/Office/')
+images,labels = get_split_dataset_info(args.target, args.data_log)
 ds1 = CustomDataset(images,labels,img_transformer=transform,is_train=True)
 target_train = torch.utils.data.DataLoader(ds1, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
@@ -160,7 +160,7 @@ with torch.no_grad():
     cost = np.linalg.norm(s_centroids[:,None,:] -  t_centroids[None,:,:],axis=-1)
     _,t_match = linear_sum_assignment(cost)
     nomatch = []  
-    for i in range(args.all_classes):
+    for i in range(K_cluster):
         if i not in t_match:
             nomatch.append(t_centroids[i])
     nomatch = np.stack(nomatch,axis=0)
@@ -199,12 +199,12 @@ best_os_star = 0
 best_unk = 0
 best_hos = 0
 best_epoch = 0
-c_weight = torch.ones(args.shared_classes)
+# c_weight = torch.ones(args.shared_classes)
 
 while epoch <70:
     customgenearator = DomainBus([source_train, target_train])
     losscounter = LossCounter()
-    with Accumulator(['pred_s','pred_t','label_s', 'label_unk', 'feature_unk','kl','fss','ftt']) as ProbRecorder:
+    with Accumulator(['pred_s','pred_t','label_s', 'kl','fss','ftt']) as ProbRecorder:
         
         for i, ((im_source, label_source), (im_target, label_target)) in enumerate(customgenearator):
             
@@ -220,10 +220,7 @@ while epoch <70:
             domain_prob_discriminator_1_target = discriminator.forward(feature_target)
             
             
-
-            
             s_ctds, t_ctds = all_centroids.get_centroids()  
-            unk_ctds = all_centroids.get_virtual_centroids()
             _, pseudo_t_label = predict_prob_target[:,:args.shared_classes].max(1)
             
 
@@ -237,89 +234,57 @@ while epoch <70:
             unknown_cluster = np.argmax(gmm.means_)
             gmm_index = gmm.predict(to_np(kltarget)[:,None])
             
-            _, predict_t = predict_prob_target.max(1)
-            predict_t = (predict_t.cpu().numpy())<10
-            unk = (gmm_index!= known_cluster)
-            
-            
-            # label_unk:  target class that unk sample misclassified into
-            # feature_unk:  misclassified unk sample feature
-            label_unk = pseudo_t_label[predict_t*unk]
-            feature_unk = feature_target[predict_t*unk]
-
-            
-            pred_s, pred_t, label_s, label_unk, feature_unk, kl, fss, ftt \
+                      
+            pred_s, pred_t, label_s, kl, fss, ftt \
                 = [variable_to_numpy(x)  for x in (nn.Softmax(-1)(fc_source[:,:args.shared_classes]), \
-                      predict_prob_target, label_source, label_unk, feature_unk, kltarget, feature_source, feature_target)]
+                      predict_prob_target, label_source, kltarget, feature_source, feature_target)]
             ProbRecorder.updateData(globals())
 
             
             weight = gmm.predict_proba(to_np(kltarget)[:,None])[:,known_cluster]
-            
-           
             weight = torch.tensor(weight).cuda().detach()
  
 
             
             
-            if epoch<=10:
-                         
+            if epoch<=10:# first 10 epoch use most confident sample
                 weight = torch.where(weight>0.8,torch.tensor([1]).float().cuda(),torch.tensor([0]).float().cuda()).detach()               
                 r = torch.nonzero(torch.tensor(gmm_index!=known_cluster).cuda()).unsqueeze(-1)
                 topk=16
                 if r.size()[0]>topk:
                     r = torch.sort(kltarget.detach(),dim = 0)[1][-1*topk:]
-            else:
-                           
+            else:             
                 weight = torch.where(torch.tensor(gmm_index==known_cluster).cuda(),torch.tensor([1]).float().cuda(),torch.tensor([0]).float().cuda()).detach()               
                 r = torch.nonzero(torch.tensor(gmm_index==unknown_cluster).cuda()).unsqueeze(-1)
-       
+
+
             
-        
-        
+            ce = CrossEntropyLoss(label_source, nn.Softmax(-1)(fc_source))
+
+            virtual_predict_prob_source = cls.virt_forward( nomatch, feature_source, fc_source[:,:],torch.nonzero(label_source)[:,1],)
+            p = torch.zeros([label_source.shape[0],nomatch.size(0)]).cuda()
+            v_label_source = torch.cat((label_source[:,:],p),1)
+            virtual_ce = CrossEntropyLoss(v_label_source, virtual_predict_prob_source)
+    
+            entropy = EntropyLoss(predict_prob_target [:,:], instance_level_weight= weight.contiguous())
+
+            adv_loss = BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_source), predict_prob=domain_prob_discriminator_1_source )
+            adv_loss += BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_target), predict_prob=1 - domain_prob_discriminator_1_target, 
+                                        instance_level_weight = weight.contiguous())
+      
             feature_otherep = torch.index_select(ft1, 0, r.view(-1))
-   
-            K = args.all_classes-args.shared_classes
             if r.size()[0]>1:
                 _, feature_otherep, logits_otherep, predict_prob_otherep = cls.forward(feature_otherep)
                 _, pseudo_index = predict_prob_otherep[:,args.shared_classes:].max(1)
                 pseudo_index=pseudo_index + args.shared_classes
                 pseudo_label = torch.zeros(r.size()[0],args.all_classes).cuda().scatter_(1,pseudo_index.unsqueeze(1),torch.ones(r.size()[0],1).cuda())
-                
-                
-                ce_ep = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])
-            
+                ce_ep = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])            
             else:
-               
                 ce_ep=torch.tensor(0.0)
-
- 
-            
-            ce = CrossEntropyLoss(label_source, nn.Softmax(-1)(fc_source))
-
-
-          
-            virtual_predict_prob_source = cls.virt_forward( nomatch, feature_source, fc_source[:,:],torch.nonzero(label_source)[:,1],)
-            p = torch.zeros([label_source.shape[0],nomatch.size(0)]).cuda()
-            v_label_source = torch.cat((label_source[:,:],p),1)
-
-
-            vir_weight = c_weight[torch.nonzero(label_source)[:,1]].cuda()
-            vir_weight = torch.where(vir_weight>0,torch.tensor([1]).float().cuda(),torch.tensor([0]).float().cuda()).detach()
-            virtual_ce = CrossEntropyLoss(v_label_source, virtual_predict_prob_source, instance_level_weight= vir_weight.contiguous())
-    
-            entropy = EntropyLoss(predict_prob_target [:,:], instance_level_weight= weight.contiguous())
-            adv_loss = BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_source), predict_prob=domain_prob_discriminator_1_source )
-            adv_loss += BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_target), predict_prob=1 - domain_prob_discriminator_1_target, 
-                                        instance_level_weight = weight.contiguous())
-      
-
-         
 
            
 
             with OptimizerManager([optimizer_cls, optimizer_feature_extractor,optimizer_discriminator]):
-
                 if epoch<=warmiter:
                     loss = 1 * ce + 1* virtual_ce + 0 * adv_loss + 0 * entropy + 0 * ce_ep         
                 else:
@@ -350,7 +315,7 @@ while epoch <70:
     cost = np.linalg.norm(s_centroids[:,None,:] -  t_centroids[None,:,:],axis=-1)
     _,t_match = linear_sum_assignment(cost)
     nomatch = []
-    for i in range(args.all_classes):
+    for i in range(K_cluster):
         if i not in t_match:
             nomatch.append(t_centroids[i])
     nomatch = np.stack(nomatch,axis=0)
@@ -388,7 +353,7 @@ while epoch <70:
                 net.state_dict()['1.fc.weight'].requires_grad = True
     
     
-    c_weight = all_centroids.update_virtual(ProbRecorder['feature_unk'], ProbRecorder['label_unk'])
+    
     if epoch<=30:
         gmm = BayesianGaussianMixture(n_components=4, max_iter=800).fit(ProbRecorder['kl'][:,None])
     else:
@@ -400,7 +365,6 @@ while epoch <70:
     # =================================evaluation
     with TrainingModeManager([feature_extractor, cls], train=False) as mgr, Accumulator(['predict_prob','predict_index', 'label']) as accumulator:
         for (i, (im, label)) in enumerate(target_test):
-
             im = im.cuda()
             label = label.cuda()
             ss, fs,_,  predict_prob = net.forward(im)
