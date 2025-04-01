@@ -30,8 +30,8 @@ def get_args():
     parser.add_argument("--all_classes", type=int, default=12,help=" Known+unknown classes")
    
     #path of the folders used
-    parser.add_argument("--folder_log", default="of31", help="Path of the log folder")
-    parser.add_argument("--data_log", default="/home/tongyujun/Office/", help="Path of the dataset")
+    parser.add_argument("--log_dir", default="/home/tongyujun/Reserve_to_Adapt-main/log/of31/", help="Path of the log folder")
+    parser.add_argument("--data_dir", default="/home/tongyujun/Office/", help="Path of the dataset")
 
     #to select gpu/num of workers
     parser.add_argument("--gpu", type=int, default=0, help="gpu chosen for the training")
@@ -51,20 +51,20 @@ warmiter = 3
 
 
 
-args.folder_log = '/home/tongyujun/Reserve_to_Adapt-main/log/'+ args.folder_log +'/' + args.source.split('/')[-1][0]+'2'+args.target.split('/')[-1][0]+'_'+args.name
+args.log_dir = args.log_dir + args.source.split('/')[-1][0]+'2'+args.target.split('/')[-1][0]+'_'+args.name
 
 
 
-if not os.path.exists(args.folder_log):
-    os.makedirs(args.folder_log)
+if not os.path.exists(args.log_dir):
+    os.makedirs(args.log_dir)
     
 print('\n')    
 print('TRAIN START!')
 print('\n')
-print('THE OUTPUT IS SAVED IN A TXT FILE HERE -------------------------------------------> ', args.folder_log)
+print('THE OUTPUT IS SAVED IN A TXT FILE HERE -------------------------------------------> ', args.log_dir)
 print('\n')
 
-f = open(args.folder_log + '/out.txt', 'w')
+f = open(args.log_dir + '/out.txt', 'w')
 sys.stdout = f
 
 
@@ -80,7 +80,7 @@ def transform(data, label, is_train):
     ])
     data = transform_train(data)
     return data, label
-images,labels = get_split_dataset_info(args.source, args.data_log)
+images,labels = get_split_dataset_info(args.source, args.data_dir)
 ds = CustomDataset(images,labels,img_transformer=transform,is_train=True)
 source_train = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
@@ -99,7 +99,7 @@ def transform(data, label, is_train):
     ])
     data = transform_train(data)
     return data, label
-images,labels = get_split_dataset_info(args.target, args.data_log)
+images,labels = get_split_dataset_info(args.target, args.data_dir)
 ds1 = CustomDataset(images,labels,img_transformer=transform,is_train=True)
 target_train = torch.utils.data.DataLoader(ds1, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
@@ -256,9 +256,19 @@ while epoch <70:
             else:             
                 weight = torch.where(torch.tensor(gmm_index==known_cluster).cuda(),torch.tensor([1]).float().cuda(),torch.tensor([0]).float().cuda()).detach()               
                 r = torch.nonzero(torch.tensor(gmm_index==unknown_cluster).cuda()).unsqueeze(-1)
-
+   
 
             
+            feature_otherep = torch.index_select(ft1, 0, r.view(-1))
+            if r.size()[0]>1:
+                _, feature_otherep, logits_otherep, predict_prob_otherep = cls.forward(feature_otherep)
+                _, pseudo_index = predict_prob_otherep[:,args.shared_classes:].max(1)
+                pseudo_index=pseudo_index + args.shared_classes
+                pseudo_label = torch.zeros(r.size()[0],args.all_classes).cuda().scatter_(1,pseudo_index.unsqueeze(1),torch.ones(r.size()[0],1).cuda())
+                ce_ep = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])            
+            else:
+                ce_ep=torch.tensor(0.0)
+               
             ce = CrossEntropyLoss(label_source, nn.Softmax(-1)(fc_source))
 
             virtual_predict_prob_source = cls.virt_forward( nomatch, feature_source, fc_source[:,:],torch.nonzero(label_source)[:,1],)
@@ -271,18 +281,7 @@ while epoch <70:
             adv_loss = BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_source), predict_prob=domain_prob_discriminator_1_source )
             adv_loss += BCELossForMultiClassification(label=torch.ones_like(domain_prob_discriminator_1_target), predict_prob=1 - domain_prob_discriminator_1_target, 
                                         instance_level_weight = weight.contiguous())
-      
-            feature_otherep = torch.index_select(ft1, 0, r.view(-1))
-            if r.size()[0]>1:
-                _, feature_otherep, logits_otherep, predict_prob_otherep = cls.forward(feature_otherep)
-                _, pseudo_index = predict_prob_otherep[:,args.shared_classes:].max(1)
-                pseudo_index=pseudo_index + args.shared_classes
-                pseudo_label = torch.zeros(r.size()[0],args.all_classes).cuda().scatter_(1,pseudo_index.unsqueeze(1),torch.ones(r.size()[0],1).cuda())
-                ce_ep = CrossEntropyLoss(pseudo_label[:,:],predict_prob_otherep[:,:])            
-            else:
-                ce_ep=torch.tensor(0.0)
-
-           
+               
 
             with OptimizerManager([optimizer_cls, optimizer_feature_extractor,optimizer_discriminator]):
                 if epoch<=warmiter:
