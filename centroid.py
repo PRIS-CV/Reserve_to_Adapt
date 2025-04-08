@@ -35,19 +35,6 @@ class Centroids(object):
 
     
     @torch.no_grad()
-    def update_cweight(self, label_unk):
-        c_weight = torch.zeros(self.class_num)
-        if len(label_unk) == 0:
-            return c_weight  # 
-        for i in range(self.class_num):
-            count = np.sum(label_unk == i)  # 直接使用Numpy的sum方法
-            if count>0:
-                c_weight[i]+=sum(label_unk==i)
-        c_weight = c_weight/torch.sum(c_weight)
-        return c_weight
-
-    
-    @torch.no_grad()
     def upd_src_centroids(self, probs, labels):      
         for i in range(self.class_num):
             
