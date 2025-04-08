@@ -288,6 +288,10 @@ while epoch <70:
                     loss = 1 * ce + 1* virtual_ce + 0 * adv_loss + 0 * entropy + 0 * ce_ep         
                 else:
                     loss = ce + 0.01 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep 
+                # if epoch<=warmiter: d2a
+                #     loss = 1 * ce + 0* virtual_ce + 0 * adv_loss + 0 * entropy + 0 * ce_ep         
+                # else:
+                #     loss = ce + 0 * virtual_ce + 0.3 * adv_loss + 1 * entropy + 1 * ce_ep 
                 loss.backward()
             losscounter.addOntBatch(ce, entropy, virtual_ce, ce_ep, adv_loss)
             k += 1
