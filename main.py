@@ -47,7 +47,7 @@ args = get_args()
 
 orig_stdout = sys.stdout
 max_iter = 10000
-warmiter = 3
+warmiter = 3 #a2d:2 for best result
 
 
 
